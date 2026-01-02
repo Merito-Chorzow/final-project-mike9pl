@@ -7,25 +7,25 @@
 #include <freertos/task.h>
 #include <freertos/queue.h>
 
-static FsmState appState = FsmState::INIT; 	// Stan początkowy INIT
+static FsmState appState = FsmState::INIT; 			// Stan początkowy INIT
 static IdlePhase idlePhase = IdlePhase::RED; 		// Faza początkowa dla GŁÓWNYCH LEDÓW = czerwony
 static RunPhase runPhase = RunPhase::SEC_RED; 		// Faza początkowa dla LEDÓW = czerwony
 static TickType_t phaseStart = 0; 					// Czas rozpoczęcia bieżącej fazy
 static TickType_t safeBlinkStart = 0;				// Czas rozpoczęcia migania w trybie SAFE
 static bool safeYellowOn = false; 					// Stan żółtego LED w trybie SAFE
 
-// --- NEW: tracking total times and state entry time
-static TickType_t stateEntryTime = 0;               // czas wejścia do bieżącego stanu
-static TickType_t totalIdle = 0;
-static TickType_t totalRun  = 0;
-static TickType_t totalSafe = 0;
+static TickType_t stateEntryTime = 0;               // Czas wejścia do bieżącego stanu
+static TickType_t totalIdle = 0;					// Łączny czas w stanie IDLE
+static TickType_t totalRun  = 0; 					// Łączny czas w stanie RUN
+static TickType_t totalSafe = 0; 					// Łączny czas w stanie SAFE
 
-// Czas trwania faz/przejść w ms (przekonwertowane na TickType_t)
-static const TickType_t dur_red = pdMS_TO_TICKS(3000);
-static const TickType_t dur_y1  = pdMS_TO_TICKS(1000);
-static const TickType_t dur_green = pdMS_TO_TICKS(3000);
-static const TickType_t dur_y2  = pdMS_TO_TICKS(2000);
-static const TickType_t dur_safe_blink = pdMS_TO_TICKS(400);
+static const TickType_t durMainRed = pdMS_TO_TICKS(3000); 		// Czas trwania czerwonego światła głównego
+static const TickType_t durMainGreen = pdMS_TO_TICKS(3000); 	// Czas trwania zielonego światła głównego
+static const TickType_t durMainYellow1  = pdMS_TO_TICKS(1000); 	// Czas trwania pierwszego żółtego światła głównego
+static const TickType_t durMainYellow2  = pdMS_TO_TICKS(2000); 	// Czas trwania drugiego żółtego światła głównego
+static const TickType_t durPedRed = pdMS_TO_TICKS(3000); 		// Czas trwania czerwonego światła pieszego
+static const TickType_t durPedGreen = pdMS_TO_TICKS(3000); 		// Czas trwania zielonego światła pieszego
+static const TickType_t safeBlink = pdMS_TO_TICKS(400); 		// Czas trwania migania w trybie SAFE
 
 // Uruchamia akcje wejściowe przy ustawieniu stanu
 static void on_state_enter(FsmState state, TickType_t now)
@@ -176,31 +176,35 @@ void fsm_init()
 				TickType_t elapsed = now - phaseStart;  		// czas w bieżącej fazie
 				switch (idlePhase) {
 					case IdlePhase::RED: 						// po czerwonym przejdź do YELLOW1
-						if (elapsed >= dur_red) { 
+						if (elapsed >= durMainRed) { 
 							idlePhase = IdlePhase::YELLOW1; 	// przejdź do YELLOW1
 							phaseStart = now; 					// zresetuj czas fazy
 							set_main_led(false, true, false); 	// ustaw GŁÓWNY na żółty
+							uart_log_line("LED: MAIN RED -> MAIN YELLOW\n\r");
 						}
 						break;
 					case IdlePhase::YELLOW1:
-						if (elapsed >= dur_y1) {
+						if (elapsed >= durMainYellow1) {
 							idlePhase = IdlePhase::GREEN; 		// przejdź do GREEN
 							phaseStart = now; 					// zresetuj czas fazy
 							set_main_led(false, false, true); 	// ustaw GŁÓWNY na zielony
+							uart_log_line("LED: MAIN YELLOW -> MAIN GREEN\n\r");
 						}
 						break;
 					case IdlePhase::GREEN:
-						if (elapsed >= dur_green) {
+						if (elapsed >= durMainGreen) {
 							idlePhase = IdlePhase::YELLOW2; 	// przejdź do YELLOW2
 							phaseStart = now; 					// zresetuj czas fazy
 							set_main_led(false, true, false); 	// ustaw GŁÓWNY na żółty
+							uart_log_line("LED: MAIN GREEN -> MAIN YELLOW\n\r");
 						}
 						break;
 					case IdlePhase::YELLOW2: 
-						if (elapsed >= dur_y2) {
+						if (elapsed >= durMainYellow2) {
 							idlePhase = IdlePhase::RED; 		// przejdź do RED
 							phaseStart = now;   				// zresetuj czas fazy
 							set_main_led(true, false, false);	// ustaw GŁÓWNY na czerwony
+							uart_log_line("LED: MAIN YELLOW -> MAIN RED\n\r");
 						}
 						break;
 				}
@@ -210,14 +214,16 @@ void fsm_init()
 			case FsmState::RUN: {
 				TickType_t elapsed = now - phaseStart;
 				if (runPhase == RunPhase::SEC_RED) {
-					if (elapsed >= dur_red) {
+					if (elapsed >= durPedRed) {
 						runPhase = RunPhase::SEC_GREEN; // przejdź do SEC_GREEN
 						phaseStart = now;				// zresetuj czas fazy
 						set_ped_led(false, true); 		// zmień światło pieszych na ZIELONE
+						uart_log_line("LED: RED -> GREEN\n\r");
 					}
 				} else {
-					if (elapsed >= dur_green) {
+					if (elapsed >= durPedGreen) {
 						set_ped_led(true, false); 		// zmień światło pieszych na CZERWONE
+						uart_log_line("LED: GREEN -> RED\n\r");
 						fsm_set_state(FsmState::IDLE); 	// powrót do IDLE po zakończeniu fazy zielonej	
 						uart_log_line("SYS: IDLE MODE\n\r");
 					}
@@ -227,11 +233,12 @@ void fsm_init()
 			}
 
 			case FsmState::SAFE: {
-				// miganie żółtym co dur_safe_blink
-				if ((now - safeBlinkStart) >= dur_safe_blink) {
+				// miganie żółtym co durSafeBlink
+				if ((now - safeBlinkStart) >= safeBlink) {
 					safeBlinkStart = now;						// czas na przełączenie stanu migania
 					safeYellowOn = !safeYellowOn; 				// przełącz stan żółtego LED
 					set_main_led(false, safeYellowOn, false); 	// migaj żółtym
+					uart_log_line("LED: YELLOW BLINK\n\r");
 				}
 				break;
 			}
