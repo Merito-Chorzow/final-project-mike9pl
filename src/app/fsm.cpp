@@ -245,6 +245,8 @@ void fsm_init()
 
 			case FsmState::FAULT:
 				// krótkie opóźnienie w FAULT
+				set_main_led(false, false, false);
+				set_ped_led(false, false);
 				vTaskDelay(pdMS_TO_TICKS(200));
 				break;
 		}
